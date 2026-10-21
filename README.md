@@ -17,7 +17,7 @@ port original para Windows e ficam como referência.
 ## Português
 
 Port nativo do **Shadow of the Colossus** de PS4 (Bluepoint, 2018; CUSA08809, versão EU 1.01)
-para **Windows 10/11**. O código x86-64 do próprio jogo roda direto na CPU do PC e a GPU do PS4
+para **Linux**. O código x86-64 do próprio jogo roda direto na CPU do PC e a GPU do PS4
 é traduzida para Vulkan. Não é um emulador completo: é um carregador com as funções de sistema
 de que o jogo precisa, no estilo do [bloodborne_pc](https://github.com/Supermedo/bloodborne_pc).
 
