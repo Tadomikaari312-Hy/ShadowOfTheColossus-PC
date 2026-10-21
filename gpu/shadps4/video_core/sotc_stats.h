@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 namespace SotcStats {
 /// sotc: the switches of the stats printers in videoout/driver.cpp (SOTC_FPS line; SOTC_CMD_STATS
@@ -19,6 +22,14 @@ namespace SotcStats {
 /// exchange(0) only under the same switch). The variables are never set at run time.
 inline const bool kFpsLog = std::getenv("SOTC_FPS") != nullptr;
 inline const bool kCmdStats = std::getenv("SOTC_CMD_STATS") != nullptr;
+/// sotc: skip BindResources on consecutive draws whose pipeline, push data and resource
+/// handles did not change. On by default; SOTC_FAST_BIND=0 disables it.
+inline const bool kFastBind = [] {
+    const char* v = std::getenv("SOTC_FAST_BIND");
+    return !v || v[0] != '0';
+}();
+inline std::atomic<uint64_t> fast_bind_eligible{0};
+inline std::atomic<uint64_t> fast_bind_hits{0};
 inline std::atomic<uint64_t> readbacks{0};    ///< BufferCache::DownloadMemory calls
 inline std::atomic<uint64_t> readback_ns{0};  ///< time spent in them (copy and wait)
 inline std::atomic<uint64_t> watch_addr{0};     ///< SOTC_CS_WATCH: GPU writes to report
@@ -48,10 +59,43 @@ inline std::atomic<uint64_t> cp_waits{0};
 /// loop around them, which spins while a queue waits).
 inline std::atomic<uint64_t> draw_idle_ns{0};
 inline std::atomic<uint64_t> cp_parse_ns{0};
+// sotc: the stats timers used to call steady_clock::now() twice per resumed task, and the vDSO
+// clock_gettime was 14% of the command processor thread (SOTC_PROFILE). The TSC is invariant on
+// the CPUs this port targets; calibrate it once against steady_clock.
+inline uint64_t ReadTsc() {
+#if defined(_MSC_VER)
+    return __rdtsc();
+#elif defined(__x86_64__) || defined(__i386__)
+    unsigned lo;
+    unsigned hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return (static_cast<uint64_t>(hi) << 32) | lo;
+#else
+    return static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
 inline uint64_t NowNs() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
+    // sotc: fixed point (ns = ticks * mult >> 32) instead of a double conversion per call: the
+    // parser calls this twice per resumed task and the double multiply was 6% of its thread
+    // (SOTC_PROFILE). The 128-bit product is one mulq and keeps ~1 ns precision.
+    static const uint64_t mult = [] {
+        const auto start = std::chrono::steady_clock::now();
+        const uint64_t ticks0 = ReadTsc();
+        while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(2)) {
+        }
+        const uint64_t ticks1 = ReadTsc();
+        const auto end = std::chrono::steady_clock::now();
+        const double ns = std::chrono::duration<double, std::nano>(end - start).count();
+        const double ticks = static_cast<double>(ticks1 - ticks0);
+        const double ns_per_tick = ticks > 0.0 ? ns / ticks : 1.0;
+        return static_cast<uint64_t>(ns_per_tick * 4294967296.0 + 0.5);
+    }();
+#if defined(__SIZEOF_INT128__)
+    return static_cast<uint64_t>((static_cast<unsigned __int128>(ReadTsc()) * mult) >> 32);
+#else
+    return static_cast<uint64_t>(static_cast<double>(ReadTsc()) * (double(mult) / 4294967296.0));
+#endif
 }
 /// Change of a monotonic single-writer counter since the last call (`seen` keeps the last value).
 inline uint64_t TakeDelta(const std::atomic<uint64_t>& counter, uint64_t& seen) {

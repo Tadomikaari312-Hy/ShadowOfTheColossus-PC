@@ -1,6 +1,9 @@
 /* Shadow of the Colossus (CUSA08809) imports specific to this game.
  * Each function follows the PS4 contract as implemented by shadPS4 (GPL-2.0-or-later). */
 #define _CRT_RAND_S
+#ifndef _WIN32
+#define _GNU_SOURCE /* bbport: syscall/random/usleep/tm_gmtoff on glibc. */
+#endif
 #include "runtime.h"
 #include <errno.h>
 #include <math.h>
@@ -405,8 +408,9 @@ static int32_t evf_wait_common(EventFlag *f, uint64_t bits, int mode, uint64_t *
             clock_gettime(CLOCK_REALTIME,&slice); slice.tv_sec+=5;
             if (pthread_cond_timedwait(&w.cv,&f->lock,&slice)==ETIMEDOUT && !w.ready && !w.canceled && !w.deleted && reported<3) {
                 ++reported;
-                fprintf(stderr,"Runtime: event flag '%s' waited %ds for 0x%llx (mode 0x%x), bits 0x%llx\n",f->name,
-                        reported*5,(unsigned long long)bits,mode,(unsigned long long)f->bits);
+                fprintf(stderr,"Runtime: event flag '%s' waited %ds for 0x%llx (mode 0x%x), bits 0x%llx, tid %lu, obj %p\n",f->name,
+                        reported*5,(unsigned long long)bits,mode,(unsigned long long)f->bits,
+                        (unsigned long)syscall(SYS_gettid),(void *)f);
             }
         }
         else if (pthread_cond_timedwait(&w.cv,&f->lock,&deadline)==ETIMEDOUT && !w.ready && !w.canceled && !w.deleted) {

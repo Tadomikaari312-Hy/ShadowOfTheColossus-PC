@@ -196,7 +196,18 @@ public:
         return back_threaded;
     }
     bool OnBackThread() const noexcept {
-        return back_threaded && std::this_thread::get_id() == back_id;
+        // sotc: called on every register access; the TLS thread id lookup was 3.5% of the draw
+        // thread (SOTC_PROFILE). A thread never changes its role, so cache the answer per thread.
+        static thread_local const void* cached_for = nullptr;
+        static thread_local bool is_back = false;
+        if (cached_for != this) {
+            if (back_id == std::thread::id{}) {
+                return false;
+            }
+            cached_for = this;
+            is_back = back_threaded && std::this_thread::get_id() == back_id;
+        }
+        return is_back;
     }
     /// The command processor or the draw thread: both work on the GPU state.
     bool IsGpuSideThread() const noexcept {

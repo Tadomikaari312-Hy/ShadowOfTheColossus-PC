@@ -1,5 +1,33 @@
 # Changelog
 
+## Não lançado — binds de descritores reaproveitados (2026-10-21)
+- **Fast bind no Vulkan (padrão ligado):** quando o desenho seguinte usa o mesmo pipeline,
+  push constants, buffers, imagens e samplers, o port pula a remontagem dos descritores.
+  Desenhos com compute, feedback loop, clip planes, storage images, FMasks, shared memory ou
+  recursos escritos continuam no caminho normal; buffers de stream e imagens têm guarda de
+  geração/wrap. Acerto de 59–75% dos draws elegíveis no demo.
+- **Ganho medido no Santuário:** 24,0–25,0 → 29,6–30,0 FPS; `draw busy` 39–40 → 32,5–33,1 ms;
+  `parse` 22–23 → 18–20 ms. No caminho completo até o primeiro colosso: 30 FPS travados,
+  frametime 33,2–33,5 ms, sem artefatos de textura ou sombra observados.
+- **Interface:** opção **Reutilizar binds entre desenhos** nos lançadores Linux e Windows.
+  `SOTC_FAST_BIND=0` desliga; com `SOTC_FPS=1` o log mostra o acerto por janela.
+
+## Não lançado — FSR 3.1.6 Frame Generation (2026-10-19)
+- **Geração de quadros FSR 3.1.6 (30 → 60 FPS):** um quadro intermediário é desenhado entre dois
+  quadros do jogo usando a profundidade, os vetores de movimento e a câmera que o próprio jogo
+  escreve. No jogo a 30 FPS a tela passa a apresentar 60 quadros por segundo; abaixo de 30 FPS a
+  apresentação fica perto do dobro da taxa do jogo. Medido na RX 6600M (Mesa RADV, 1080p): 60
+  apresentações/s com p50 de 16,8 ms entre elas. `SOTC_FRAMEGEN=fsr` (ou `auto`) liga no início e
+  **F8** alterna com desligado; o padrão continua desligado.
+- **Apresentação em thread própria com FSR 3:** o quadro gerado sai meio quadro depois do quadro
+  do jogo, então as apresentações passam a ser feitas numa thread separada para o relógio do
+  vblank não perder o ritmo. `SOTC_ASYNC_PRESENT=1` usa o mesmo caminho sem geração de quadros.
+- **Núcleo FSR-Vulkan no build Linux:** o submódulo `gpu/third_party/fsr-vulkan` (fixo no commit
+  `c64f093`) entra no CMake e é ligado à `libbbgpu.so`.
+- **Diagnóstico:** `SOTC_FSRFG_LOG=1` mostra os quadros gerados e o ritmo das apresentações;
+  `SOTC_FRAMEGEN_TEST_CYCLE=segundos` alterna os modos para testes.
+- O caminho sem geração de quadros não mudou: `SOTC_FRAMEGEN=off` mantém a apresentação como era.
+
 ## 0.57-opt7 — 2026-10-19 (fork Oussama268)
 - **Bem menos travadas na primeira vez que se joga** (pasta nova, cache vazio, ou depois de
   atualizar o driver): os shaders novos dos desenhos agora são traduzidos em várias threads, e o

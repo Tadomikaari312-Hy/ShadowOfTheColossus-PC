@@ -112,7 +112,7 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / GAME_ID), '
                 'output_res': '1920x1080', 'upscaler': 'fsr1', 'sharpness': '250', 'mouse': True,
                 'mouse_sens': '1.0', 'mouse_invert': False, 'neo': False, 'fx_vignette': True,
                 'fx_fog': True, 'fx_ssao': True, 'engine_cvars': '', 'perf_culling': True,
-                'perf_record_thread': True, 'perf_dma': True, 'gpu_submit': 'auto', 'library_dirs': [], 'keys': {},
+                'perf_record_thread': True, 'perf_fastbind': True, 'perf_dma': True, 'gpu_submit': 'auto', 'library_dirs': [], 'keys': {},
                 'auto_setup': True, 'dlc_dir': '', 'check_updates': True, 'skip_version': ''}
 # Keyboard bindings (src/runtime_pad.c): PS4 input, its default SDL key name, label.
 KEY_INPUTS = [
@@ -330,6 +330,7 @@ def game_environment(s):
     cvars += str(s.get('engine_cvars', '')).split()
     env['SOTC_CVARS'] = ' '.join(cvars)
     env['SOTC_RECORD_THREAD'] = '1' if s.get('perf_record_thread', True) else '0'
+    env['SOTC_FAST_BIND'] = '1' if s.get('perf_fastbind', True) else '0'
     if not s.get('perf_dma', True):
         env['BB_DIRECT_MEMORY_ACCESS'] = '0'
     # Periodic submits and readbacks ahead: by default only with NVIDIA (vk_rasterizer.cpp).
@@ -861,6 +862,14 @@ class Launcher:
                      'Ponte do cânion no demo: ~24 → ~28 FPS. Desligue se notar travamentos.',
                      'Records and submits the GPU commands on another thread (cp_record_thread of '
                      'Pink-shadPS4). Canyon bridge in the demo: ~24 → ~28 FPS. Turn it off if the game hangs.'))
+        self.check(f, 'perf_fastbind', _('Reutilizar binds entre desenhos (recomendado)',
+                                          'Reuse binds between draws (recommended)'),
+                   _('Não refaz os binds quando o desenho seguinte usa o mesmo pipeline, recursos e uniforms. '
+                     'Medido no Santuário e no caminho até o 1º colosso: ~25 → 30 FPS com frametime cravado '
+                     'em 33,3 ms. Desligue se aparecer textura ou sombra estranha.',
+                     'Skips rebuilding the binds when the next draw uses the same pipeline, resources and '
+                     'uniforms. Measured at the Sanctuary and on the way to the first colossus: ~25 → 30 FPS '
+                     'with a steady 33.3 ms frame time. Turn it off if a texture or shadow looks wrong.'))
         self.check(f, 'perf_dma', _('Reflexos completos da água (acesso direto à memória)',
                                      'Full water reflections (direct memory access)'),
                    _('Deixa os shaders lerem tabelas da memória do jogo direto (como o Pink-shadPS4): o lago ondula '

@@ -220,14 +220,18 @@ private:
         return !word.load(std::memory_order_relaxed) &&
                !word.exchange(1, std::memory_order_acquire);
     }
-    std::atomic<u32> word{0};       ///< spinlock of the other threads (and of the biased owner
-                                    ///< when it had to queue behind them)
-    std::atomic<u32> slow_wants{0}; ///< a thread holding `word` waits for or holds the lock
-    std::atomic<const void*> fast_token{nullptr};
+    // sotc: the fast path (biased owner) reads/writes owner, depth, mode and fast_held on every
+    // hold; the slow path (guest write faults) writes word/slow_wants. Keeping them on the same
+    // cache line made every guest lock invalidate the line the draw thread loads after the
+    // acquire fence (4.7% of the draw thread, SOTC_PROFILE, at the slow_wants load).
     std::atomic<const void*> owner{nullptr};
     u32 depth = 0;
     Mode mode = Mode::Fast;
+    std::atomic<const void*> fast_token{nullptr};
     alignas(64) std::atomic<u32> fast_held{0}; ///< the biased owner holds it (written by it only)
+    alignas(64) std::atomic<u32> word{0};      ///< spinlock of the other threads (and of the biased
+                                               ///< owner when it had to queue behind them)
+    alignas(64) std::atomic<u32> slow_wants{0}; ///< a thread holding `word` waits for or holds it
 };
 
 inline bool TextureLockBatching() {
@@ -303,6 +307,13 @@ public:
 
     TileManager& GetTileManager() noexcept {
         return tile_manager;
+    }
+
+    /// sotc: changes when an image is registered/unregistered or a sampler is destroyed, i.e.
+    /// when a previously bound texture descriptor may hold a stale handle (SOTC_FAST_BIND).
+    u64 BindGeneration() const noexcept {
+        return image_set_generation ^
+               (sampler_epoch.load(std::memory_order_acquire) * 0x9E3779B97F4A7C15ULL);
     }
 
     /// Frees cached images not used in the last few GC ticks (one per submit), regardless of
@@ -415,6 +426,18 @@ public:
             TouchImage(image);
         }
         return image;
+    }
+
+    /// sotc: the image with this id if it is still the registered image `uid`, else nullptr.
+    [[nodiscard]] Image* TryGetImage(ImageId id, u64 uid) {
+        if (!id || !slot_images.is_allocated(id)) {
+            return nullptr;
+        }
+        auto& image = slot_images[id];
+        if (image.image_uid != uid || !(image.flags & ImageFlagBits::Registered)) {
+            return nullptr;
+        }
+        return &image;
     }
 
     /// Retrieves the image view with the specified id.

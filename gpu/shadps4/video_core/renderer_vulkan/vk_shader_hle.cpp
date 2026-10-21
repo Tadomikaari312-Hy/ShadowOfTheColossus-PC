@@ -265,6 +265,13 @@ static bool ExecuteReplicateShaderHLE(const Shader::Info& info,
         const char* v = std::getenv("SOTC_FILL_HLE_PAGES");
         return !v || v[0] != '0';
     }();
+    // sotc: when the first page of the table already changed, the page-by-page scan would find
+    // (almost) every page changed anyway. Replace the whole table in one write and skip the
+    // scan plus the per-run invalidations (SOTC_FILL_HLE_WHOLE=0 restores the scan).
+    static const bool whole_replace = [] {
+        const char* v = std::getenv("SOTC_FILL_HLE_WHOLE");
+        return !v || v[0] != '0';
+    }();
     if (!SotcStats::OptOff() && !buffer_cache.IsRegionGpuModified(address, count * 4)) {
         bool same = false;
         VAddr run_start = 0;
@@ -295,8 +302,26 @@ static bool ExecuteReplicateShaderHLE(const Shader::Info& info,
                 table.pattern = pattern.data();
                 table.period = period;
             }
-            return ReplaceChangedPages(rasterizer, address, run + (address - run_start), table,
-                                       count * 4);
+            const u8* current = run + (address - run_start);
+            if (fast && whole_replace) {
+                const u64 probe = std::min<u64>(count * 4, 4096);
+                if (std::memcmp(current, table.At(0), probe) != 0) {
+                    const u8* whole = table.direct;
+                    if (!whole) {
+                        BuildTable(source, src_count, count);
+                        whole = reinterpret_cast<const u8*>(data.data());
+                    }
+                    if (!buffer_cache.TryReplaceFromCpu(address, whole, count * 4)) {
+                        return false;
+                    }
+                    if (SotcStats::kCmdStats) {
+                        SotcStats::inv_hle.fetch_add(count * 4, std::memory_order_relaxed);
+                    }
+                    rasterizer.InvalidateMemory(address, count * 4);
+                    return true;
+                }
+            }
+            return ReplaceChangedPages(rasterizer, address, current, table, count * 4);
         }
         BuildTable(source, src_count, count);
         if (in_run) {

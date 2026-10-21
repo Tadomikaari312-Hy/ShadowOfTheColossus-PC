@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // sotc: taken from Pink-shadPS4 0.4.0 (luizgustavs), cp_record_thread; scheduler hooks in vk_scheduler.cpp.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -855,9 +856,13 @@ void CommandRecorder::ConsumerLoop(std::stop_token stoken) {
     // every small update
     // sotc: SOTC_REC_SPIN_US overrides the spin (A/B: on a power-limited laptop the spinning
     // recorder took a whole core, ~2/3 of it waiting, next to the command processor it waits on).
-    static const auto SpinTime = [] {
+    // The spin is counted in pause iterations instead of reading the clock: steady_clock::now()
+    // called every iteration showed up as 15% of the thread in __vdso_clock_gettime (SOTC_PROFILE)
+    // and the loop only bridges the gap until the producer publishes the next batch.
+    static const u32 SpinIterations = [] {
         const char* v = std::getenv("SOTC_REC_SPIN_US");
-        return std::chrono::microseconds{v ? std::strtol(v, nullptr, 10) : 250};
+        const long us = v ? std::strtol(v, nullptr, 10) : 250;
+        return static_cast<u32>(std::max<long>(1, us * 20)); // one pause is roughly 50 ns
     }();
 #ifdef _WIN32
     // sotc: Windows condition variables wait in whole milliseconds, so 500 us came out as 0: the
@@ -876,9 +881,11 @@ void CommandRecorder::ConsumerLoop(std::stop_token stoken) {
         if (pos == committed) {
             // When there is no work, spin briefly before sleeping until the producer kicks the
             // queue or the short timeout expires
-            const auto spin_end = Clock::now() + SpinTime;
-            while ((committed = chunk->committed.load(std::memory_order_acquire)) == pos &&
-                   Clock::now() < spin_end && !stoken.stop_requested()) {
+            for (u32 spin = 0; spin < SpinIterations; ++spin) {
+                committed = chunk->committed.load(std::memory_order_acquire);
+                if (committed != pos || stoken.stop_requested()) {
+                    break;
+                }
                 RECORDER_PAUSE();
             }
             if (committed == pos) {

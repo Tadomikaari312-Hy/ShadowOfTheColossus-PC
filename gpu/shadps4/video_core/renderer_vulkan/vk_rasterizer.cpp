@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <filesystem>
+#include <xxhash.h>
 #include "common/path_util.h"
 #include "video_core/renderdoc.h"
 #include "common/debug.h"
@@ -23,6 +24,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_framegen_inputs.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/buffer_cache/region_manager.h"
@@ -236,12 +238,33 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const Pipeline* resolve
         return;
     }
 
+    // sotc: one cache hold for the whole draw (render state, every stage's textures, render
+    // state): the per-pass BatchLock calls below only count their depth, so the biased owner
+    // does not re-run SetFastThread and the acquire fence per stage. SOTC_TC_DRAW_LOCK=0: keep
+    // the per-pass holds only.
+    static const bool draw_lock = [] {
+        const char* v = std::getenv("SOTC_TC_DRAW_LOCK");
+        return !v || v[0] != '0';
+    }();
+    std::unique_lock<VideoCore::ReentrantMutex> draw_texture_lock;
+    if (draw_lock) {
+        draw_texture_lock = texture_cache.BatchLock();
+    }
     PrepareRenderState(pipeline);
+    if (FgInputs::CapturingInputs()) { // sotc: camera and inputs of FSR 3 frame generation
+        FgInputs::NoteDraw(regs, pipeline->GetGraphicsKey().mrt_mask, db_desc.first,
+                           cb_descs[4].first, texture_cache);
+    }
     if (!BindResources(pipeline)) {
         SotcStats::Drop(1, regs.color_buffers[0].Address(), 0);
         return;
     }
     const auto state = BeginRendering(pipeline);
+    // The texture cache is not touched past this point: drop the draw-wide hold before the
+    // vertex/index binds and the periodic submit (a guest fault would wait for the submit).
+    if (draw_texture_lock.owns_lock()) {
+        draw_texture_lock.unlock();
+    }
 
     BindVertexBuffers(pipeline);
     if (is_indexed) {
@@ -252,7 +275,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const Pipeline* resolve
         runtime.FlushBarriers();
     }
 
-    pipeline->BindResources(set_writes, push_data);
+    if (!fast_bind_hit) {
+        pipeline->BindResources(set_writes, push_data);
+    }
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
 
@@ -314,12 +339,30 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         return;
     }
 
+    // sotc: one cache hold for the whole indirect draw (see Rasterizer::Draw).
+    static const bool draw_lock = [] {
+        const char* v = std::getenv("SOTC_TC_DRAW_LOCK");
+        return !v || v[0] != '0';
+    }();
+    std::unique_lock<VideoCore::ReentrantMutex> draw_texture_lock;
+    if (draw_lock) {
+        draw_texture_lock = texture_cache.BatchLock();
+    }
     PrepareRenderState(pipeline);
+    if (FgInputs::CapturingInputs()) { // sotc: camera and inputs of FSR 3 frame generation
+        FgInputs::NoteDraw(liverpool->DrawRegs(), pipeline->GetGraphicsKey().mrt_mask,
+                           db_desc.first, cb_descs[4].first, texture_cache);
+    }
     if (!BindResources(pipeline)) {
         SotcStats::Drop(1, liverpool->DrawRegs().color_buffers[0].Address(), 1);
         return;
     }
     const auto state = BeginRendering(pipeline);
+    // The texture cache is not touched past this point: drop the draw-wide hold before the
+    // vertex/index binds and the periodic submit (a guest fault would wait for the submit).
+    if (draw_texture_lock.owns_lock()) {
+        draw_texture_lock.unlock();
+    }
 
     BindVertexBuffers(pipeline);
     if (is_indexed) {
@@ -348,7 +391,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         if (needs_barrier) {
             runtime.FlushBarriers();
         }
-        pipeline->BindResources(set_writes, push_data);
+        if (!fast_bind_hit) {
+            pipeline->BindResources(set_writes, push_data);
+        }
         UpdateDynamicState(pipeline, is_indexed);
         scheduler.BeginRendering(state);
         const auto cmdbuf = scheduler.CommandBuffer();
@@ -401,7 +446,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         runtime.FlushBarriers();
     }
 
-    pipeline->BindResources(set_writes, push_data);
+    if (!fast_bind_hit) {
+        pipeline->BindResources(set_writes, push_data);
+    }
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
 
@@ -628,7 +675,79 @@ void Rasterizer::OnFence() {
     texture_cache.ProcessDownloadImages();
 }
 
+bool Rasterizer::FastBindEligible(const Pipeline* pipeline) const {
+    if (!SotcStats::kFastBind || pipeline->IsCompute() || attachment_feedback_loop) {
+        return false;
+    }
+    const auto& regs = liverpool->DrawRegs();
+    if (regs.clipper_control.user_clip_plane_enable != 0) {
+        return false;
+    }
+    for (const auto* stage : pipeline->GetStages()) {
+        if (!stage) {
+            continue;
+        }
+        if (stage->has_storage_images || !stage->fmasks.empty()) {
+            return false;
+        }
+        for (const auto& desc : stage->buffers) {
+            // The stream-buffer bindings are only reusable while the ring has not wrapped;
+            // StreamGeneration() in the fast-bind state checks that. Shared memory is compute.
+            if (desc.buffer_type == Shader::BufferType::SharedMemory) {
+                return false;
+            }
+            if (!desc.IsSpecial() && desc.is_written) {
+                return false;
+            }
+        }
+        for (const auto& desc : stage->images) {
+            if (desc.is_written) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+u64 Rasterizer::FastBindHash(const Pipeline* pipeline, const Shader::PushData& push_data) const {
+    const auto& regs = liverpool->DrawRegs();
+    u64 hash = XXH3_64bits(&pipeline, sizeof(pipeline));
+    hash = XXH3_64bits_withSeed(&push_data, sizeof(push_data), hash);
+    for (u32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+        const VAddr address = regs.color_buffers[cb].Address();
+        hash = XXH3_64bits_withSeed(&address, sizeof(address), hash);
+    }
+    const VAddr depth_address = regs.depth_buffer.DepthAddress();
+    hash = XXH3_64bits_withSeed(&depth_address, sizeof(depth_address), hash);
+    for (const auto* stage : pipeline->GetStages()) {
+        if (!stage) {
+            continue;
+        }
+        const auto user_data = stage->UserData();
+        if (!user_data.empty()) {
+            hash = XXH3_64bits_withSeed(user_data.data(), user_data.size_bytes(), hash);
+        }
+        const auto& flat_buf = stage->FlatBuf();
+        if (!flat_buf.empty()) {
+            hash = XXH3_64bits_withSeed(flat_buf.data(), flat_buf.size() * sizeof(u32), hash);
+        }
+    }
+    return hash;
+}
+
+void Rasterizer::CommitFastBind(const Pipeline* pipeline, u64 hash, bool uses_dma) {
+    fast_bind.pipeline = pipeline;
+    fast_bind.hash = hash;
+    fast_bind.buffer_generation = buffer_cache.BindGeneration();
+    fast_bind.texture_generation = texture_cache.BindGeneration();
+    fast_bind.stream_generation = buffer_cache.StreamGeneration();
+    fast_bind.tick = scheduler.CurrentTick();
+    fast_bind.uses_dma = uses_dma;
+    fast_bind.valid = true;
+}
+
 bool Rasterizer::BindResources(const Pipeline* pipeline) {
+    fast_bind_hit = false;
     if (IsComputeImageCopy(pipeline) || IsComputeMetaClear(pipeline) ||
         IsComputeImageClear(pipeline)) {
         static const bool drop_trace = std::getenv("SOTC_DROP_TRACE") != nullptr;
@@ -673,13 +792,40 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
                       "user data bound",
                       stage->pgm_hash, u32(stage->sw_stage), u32(stage->hw_stage),
                       fmt::ptr(stage));
+            fast_bind.valid = false;
             return false;
         }
     }
 
+    // sotc: the previous draw left these descriptors and push constants bound. Skip rebuilding
+    // them when this draw needs exactly the same pipeline, push data, render targets and
+    // resource handles. The generation bumps catch reallocated buffers/images and dead samplers.
+    const bool fast_eligible = FastBindEligible(pipeline);
+    u64 fast_hash = 0;
+    if (fast_eligible) {
+        SotcStats::fast_bind_eligible.fetch_add(1, std::memory_order_relaxed);
+        const auto input_push = MakeUserData(liverpool->DrawRegs());
+        fast_hash = FastBindHash(pipeline, input_push);
+        if (fast_bind.valid && fast_bind.pipeline == pipeline &&
+            fast_bind.tick == scheduler.CurrentTick() &&
+            fast_bind.buffer_generation == buffer_cache.BindGeneration() &&
+            fast_bind.texture_generation == texture_cache.BindGeneration() &&
+            fast_bind.stream_generation == buffer_cache.StreamGeneration() &&
+            fast_bind.hash == fast_hash) {
+            fast_bind_hit = true;
+            SotcStats::fast_bind_hits.fetch_add(1, std::memory_order_relaxed);
+            if (fast_bind.uses_dma) {
+                buffer_cache.SynchronizeDmaBuffers();
+            }
+            return true;
+        }
+        push_data = input_push;
+    } else {
+        fast_bind.valid = false;
+        push_data = MakeUserData(liverpool->DrawRegs());
+    }
     // Bind resource buffers and textures.
     Shader::Backend::Bindings binding{};
-    push_data = MakeUserData(liverpool->DrawRegs());
     for (const auto* stage : pipeline->GetStages()) {
         if (!stage) {
             continue;
@@ -693,6 +839,10 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     if (uses_dma) {
         buffer_cache.SynchronizeDmaBuffers();
+    }
+
+    if (fast_eligible) {
+        CommitFastBind(pipeline, fast_hash, uses_dma);
     }
 
     return true;
@@ -878,9 +1028,9 @@ void Rasterizer::FlushPeriodic() {
     // 1000 instead of 500 (2026-10-15, RTX 3060 laptop, idle shrine ~5800 draws/frame): about +8%
     // in a single unpaired run (250: no gain, 2000: same as 1000): fewer submits, each one
     // cheaper per draw.
-    static const u64 flush_us = [] {
+    static const u64 flush_us = []() -> u64 { // bbport: strtoull is wider than u64 on LP64.
         if (const char* v = std::getenv("SOTC_FLUSH_US")) {
-            return std::strtoull(v, nullptr, 10);
+            return static_cast<u64>(std::strtoull(v, nullptr, 10));
         }
         return std::getenv("SOTC_FLUSH_EVERY") ? u64{0} : u64{1000};
     }();

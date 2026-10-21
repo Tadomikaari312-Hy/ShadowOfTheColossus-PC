@@ -14,6 +14,9 @@
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_framegen.h"
+#include "video_core/renderer_vulkan/vk_framegen_inputs.h"
+#include "video_core/renderer_vulkan/vk_fsrfg.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/sotc_stats.h"
@@ -510,6 +513,10 @@ bool Instance::CreateDevice() {
                 .shaderImageGatherExtended = features.shaderImageGatherExtended,
                 .shaderStorageImageExtendedFormats = features.shaderStorageImageExtendedFormats,
                 .shaderStorageImageMultisample = features.shaderStorageImageMultisample,
+                // sotc: FSR 3 frame generation (vk_fsrfg.cpp) writes untyped storage images.
+                .shaderStorageImageReadWithoutFormat = features.shaderStorageImageReadWithoutFormat,
+                .shaderStorageImageWriteWithoutFormat =
+                    features.shaderStorageImageWriteWithoutFormat,
                 // Descriptor arrays of dynamic_tsharp_array_size (shader_recompiler/info.cpp)
                 .shaderSampledImageArrayDynamicIndexing =
                     features.shaderSampledImageArrayDynamicIndexing,
@@ -730,6 +737,10 @@ bool Instance::CreateDevice() {
     }
 
     CreateAllocator();
+    // sotc: AMD FSR 3 frame generation (SOTC_FRAMEGEN=fsr): inputs and the depth conversion.
+    FgInputs::Init(*this);
+    FsrFg::Init(*this);
+    FrameGen::SetAvailable(FsrFg::Supported());
     return true;
 }
 

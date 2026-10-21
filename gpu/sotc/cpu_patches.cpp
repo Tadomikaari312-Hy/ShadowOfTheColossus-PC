@@ -945,8 +945,6 @@ bool IsStaticPatchingEnabled() noexcept {
 
 } // namespace WindowsGuestRedZoneProtection
 
-#if defined(_WIN32)
-
 namespace {
 
 constexpr size_t GuestRedZoneSize = 128;
@@ -1108,7 +1106,7 @@ DecodedCodeInstruction DecodeCodeInstruction(uintptr_t address, uintptr_t end) {
         const s64 access_start = operand.mem.disp.value;
         const s64 access_size = std::max<s64>(operand.size / 8, 1);
         const s64 range_start = std::max(access_start, -static_cast<s64>(GuestRedZoneSize));
-        const s64 range_end = std::min(access_start + access_size, 0LL);
+        const s64 range_end = std::min(access_start + access_size, s64{0});
         for (s64 offset = range_start; offset < range_end; ++offset) {
             const size_t bit = static_cast<size_t>(offset + static_cast<s64>(GuestRedZoneSize));
             if ((operand.actions & ZYDIS_OPERAND_ACTION_MASK_READ) != 0) {
@@ -2264,23 +2262,6 @@ u64 PatchShortSse4aInstructions(u64 segment_addr, u64 segment_size,
     }
     return patched_count;
 }
-
-#else
-
-RedZonePatchResult PatchRedZoneMemoryInstructions(u64, u64, std::span<const uintptr_t>,
-                                                  std::span<const uintptr_t>) {
-    return {};
-}
-
-bool NeedsSse4aEmulation() {
-    return false;
-}
-
-u64 PatchShortSse4aInstructions(u64, u64, std::span<const uintptr_t>) {
-    return 0;
-}
-
-#endif
 
 // ============================================================================
 // End Windows static guest red-zone protection

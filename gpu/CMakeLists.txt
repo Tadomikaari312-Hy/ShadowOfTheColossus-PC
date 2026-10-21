@@ -54,7 +54,11 @@ endif()
 
 find_package(Vulkan REQUIRED)
 find_package(fmt REQUIRED)
-find_package(Boost REQUIRED)
+find_package(Boost QUIET CONFIG)
+if (NOT TARGET Boost::headers)
+    # Vendored subset (gpu/third_party/ext-boost, from shadPS4) when no system Boost.
+    add_subdirectory(third_party/ext-boost EXCLUDE_FROM_ALL)
+endif()
 # bbport (Windows): MSYS2 has no magic_enum/miniz packages; the submodules are used instead.
 find_package(magic_enum QUIET)
 if (NOT magic_enum_FOUND)
@@ -63,14 +67,15 @@ if (NOT magic_enum_FOUND)
     target_include_directories(magic_enum INTERFACE third_party/magic_enum/include
                                                     third_party/magic_enum/include/magic_enum)
 endif()
-find_package(tsl-robin-map REQUIRED)
+find_package(tsl-robin-map QUIET)
+if (NOT TARGET tsl::robin_map)
+    # Vendored robin-map (gpu/third_party/robin-map) when no system package.
+    add_subdirectory(third_party/robin-map EXCLUDE_FROM_ALL)
+endif()
 find_package(VulkanMemoryAllocator CONFIG QUIET)
-if (NOT VulkanMemoryAllocator_FOUND)
-    # MSYS2 ships the header (include/vma/vk_mem_alloc.h) without a CMake package.
-    find_path(VMA_INCLUDE_DIR vk_mem_alloc.h PATH_SUFFIXES vma REQUIRED)
-    add_library(VulkanMemoryAllocator INTERFACE)
-    add_library(GPUOpen::VulkanMemoryAllocator ALIAS VulkanMemoryAllocator)
-    target_include_directories(VulkanMemoryAllocator INTERFACE ${VMA_INCLUDE_DIR})
+if (NOT TARGET GPUOpen::VulkanMemoryAllocator)
+    # Vendored VMA header (gpu/third_party/vma) when no system CMake package.
+    add_subdirectory(third_party/vma EXCLUDE_FROM_ALL)
 endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
@@ -89,7 +94,18 @@ if (NOT miniz_FOUND)
     unset(CMAKE_POLICY_VERSION_MINIMUM)
     add_library(miniz::miniz ALIAS miniz)
 endif()
-find_package(Zydis REQUIRED)
+find_package(Zydis QUIET)
+if (NOT TARGET Zydis::Zydis)
+    # Vendored Zydis (gpu/third_party/zydis, + Zycore) when no system package.
+    set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/zydis EXCLUDE_FROM_ALL)
+    # bbport: the v4.1.x CMakeLists only exports Zydis::Zydis on install, not in the build tree.
+    if (NOT TARGET Zydis::Zydis)
+        add_library(Zydis::Zydis ALIAS Zydis)
+    endif()
+endif()
 find_program(GLSLANG_COMPILER NAMES glslang glslangValidator REQUIRED)
 
 set(SIRIT_USE_SYSTEM_SPIRV_HEADERS OFF CACHE BOOL "" FORCE)
@@ -120,6 +136,7 @@ add_host_shader(fs_tri.vert fs_tri_vert)
 add_host_shader(fsr.comp fsr_easu_comp SAMPLE_EASU=1)
 add_host_shader(fsr.comp fsr_rcas_comp SAMPLE_RCAS=1)
 add_host_shader(post_process.frag post_process_frag)
+add_host_shader(fg_depth.comp fg_depth_comp)
 foreach(BPP IN ITEMS 8 16 32 64 96 128)
     add_host_shader(tiling.comp tiling_micro_${BPP}_comp BITS_PER_PIXEL=${BPP} IS_MACRO_TILED=0)
     add_host_shader(tiling.comp tiling_macro_${BPP}_comp BITS_PER_PIXEL=${BPP} IS_MACRO_TILED=1)
@@ -162,6 +179,61 @@ target_compile_definitions(bbgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
 set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf)
 target_include_directories(bbgpu PRIVATE third_party/stb)
+# AMD FSR 3 frame generation (vk_fsrfg.cpp): the FidelityFX SDK 2.3 frame interpolation and
+# optical flow, natively on Vulkan (third_party/fsr-vulkan, MIT); any GPU with Vulkan 1.3.
+set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
+set(FFX_VK_PORTABLE_BUILD_FSR3_HOST OFF CACHE BOOL "" FORCE)
+set(FFX_VK_PORTABLE_BUILD_FSR3_VK_BACKEND OFF CACHE BOOL "" FORCE)
+set(FFX_VK_PORTABLE_BUILD_FSR3_3_1_5_SCAFFOLD ON CACHE BOOL "" FORCE)
+set(FFX_VK_PORTABLE_BUILD_FSR4_V07_VULKAN OFF CACHE BOOL "" FORCE)
+set(FFX_VK_PORTABLE_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+target_link_libraries(bbgpu PRIVATE ffx-vulkan::fsr3-vk-framegeneration-3.1.6)
+# The module's 3.1.6 frame generation never starts a frame on its bridge: the constant buffers
+# and descriptor sets of every dispatch are then kept until the context is destroyed (~3 MB of
+# video memory per frame, out of memory within a minute). Its source is built from a copy that
+# starts a bridge frame in RecordPrepare and retires the bridge frames in RetireFrame.
+set(FSR_FG_SRC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fsr-vulkan/src/ffx_vk_fsr3_3_1_6_framegen.cpp)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${FSR_FG_SRC})
+file(READ ${FSR_FG_SRC} fsr_fg_source)
+string(REPLACE "\r\n" "\n" fsr_fg_source "${fsr_fg_source}")
+set(fsr_fg_patched "${fsr_fg_source}")
+string(REPLACE "    context->frameId = info->frameId;\n"
+    "    context->frameId = info->frameId;\n    ffxVkFsr3_3_1_5BridgeBeginFrame(context->bridge, info->frameId); /* sotc */\n"
+    fsr_fg_patched "${fsr_fg_patched}")
+string(REPLACE [=[
+    return FFX_VK_FSR3_3_1_6_FRAMEGEN_OK;
+}
+
+extern "C" void ffxVkFsr3_3_1_6FrameGenerationContextDestroy(]=] [=[
+    ffxVkFsr3_3_1_5BridgeRetireFrame(context->bridge, completedFrameId); /* sotc */
+    return FFX_VK_FSR3_3_1_6_FRAMEGEN_OK;
+}
+
+extern "C" void ffxVkFsr3_3_1_6FrameGenerationContextDestroy(]=]
+    fsr_fg_patched "${fsr_fg_patched}")
+string(REGEX MATCHALL "/\\* sotc \\*/" fsr_fg_marks "${fsr_fg_patched}")
+list(LENGTH fsr_fg_marks fsr_fg_mark_count)
+if (NOT fsr_fg_mark_count EQUAL 2)
+    message(FATAL_ERROR "fsr-vulkan changed: update the frame generation fix in gpu/CMakeLists.txt")
+endif()
+set(FSR_FG_PATCHED ${CMAKE_CURRENT_BINARY_DIR}/sotc_fsr3_framegen.cpp)
+if (EXISTS ${FSR_FG_PATCHED})
+    file(READ ${FSR_FG_PATCHED} fsr_fg_existing)
+endif()
+if (NOT "${fsr_fg_existing}" STREQUAL "${fsr_fg_patched}")
+    file(WRITE ${FSR_FG_PATCHED} "${fsr_fg_patched}")
+endif()
+get_target_property(fsr_fg_sources ffx_vulkan_fsr3_vk_framegeneration_3_1_6 SOURCES)
+list(LENGTH fsr_fg_sources fsr_fg_count)
+list(REMOVE_ITEM fsr_fg_sources src/ffx_vk_fsr3_3_1_6_framegen.cpp)
+list(LENGTH fsr_fg_sources fsr_fg_count_after)
+if (fsr_fg_count EQUAL fsr_fg_count_after)
+    message(FATAL_ERROR "fsr-vulkan: ffx_vk_fsr3_3_1_6_framegen.cpp not in its target")
+endif()
+list(APPEND fsr_fg_sources ${FSR_FG_PATCHED})
+set_property(TARGET ffx_vulkan_fsr3_vk_framegeneration_3_1_6 PROPERTY SOURCES ${fsr_fg_sources})
 target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
 target_compile_options(bbgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
@@ -171,12 +243,14 @@ if (NOT WIN32)
 endif()
 target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
     tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit)
+# bbport: xbyak (header-only, third_party/xbyak submodule) is used by the recompiler and the SotC
+# CPU patches on every host, not only Windows.
+target_include_directories(bbgpu PRIVATE third_party/xbyak)
 if (WIN32)
     # Guest code is entered with the System V ABI; NOMINMAX/WIN32_LEAN_AND_MEAN keep
     # <windows.h> out of the way of std::min/max and the Vulkan/SDL headers.
     target_compile_definitions(bbgpu PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(bbgpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/bb_win_compat.h)
-    target_include_directories(bbgpu PRIVATE third_party/xbyak)
     target_link_libraries(bbgpu PUBLIC Vulkan::Vulkan ws2_32 bcrypt ntdll synchronization winmm)
 else()
     target_link_libraries(bbgpu PUBLIC PkgConfig::X11)

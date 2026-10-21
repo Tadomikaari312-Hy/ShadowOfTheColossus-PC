@@ -15,6 +15,9 @@
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_framegen.h"
+#include "video_core/renderer_vulkan/vk_framegen_inputs.h"
+#include "video_core/renderer_vulkan/vk_fsrfg.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -475,9 +478,15 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
 
-    // Create presentation frames.
-    present_frames.resize(num_images);
-    for (u32 i = 0; i < num_images; i++) {
+    // Create presentation frames. With FSR 3 the generated frame holds a swapchain image and the
+    // game frame is presented half a frame later: keep 4 frames in flight.
+    // sotc: FSR 3 presents a generated frame half a game frame after the game frame, so the
+    // presenter needs one more frame than the swapchain. Reserve it whenever FSR is available:
+    // F8 can enable it at runtime even when SOTC_FRAMEGEN=off.
+    const u32 num_frames =
+        FrameGen::Available(FrameGen::Mode::Fsr) ? std::max(num_images, 4u) : num_images;
+    present_frames.resize(num_frames);
+    for (u32 i = 0; i < num_frames; i++) {
         Frame& frame = present_frames[i];
         frame.id = i;
         auto fence = Check<"create present done fence">(
@@ -636,6 +645,7 @@ Frame* Presenter::PrepareLastFrame() {
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);
+    FgInputs::NoInputs(frame->id); // sotc: a repeated frame, no frame generation
     return frame;
 }
 
@@ -698,6 +708,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     auto& image = texture_cache.GetImage(image_id);
     auto image_view = *image.FindView(view_info).image_view;
     const vk::Extent2D image_size = {image.info.size.width, image.info.size.height};
+    // sotc: this frame's depth, motion vectors and camera for FSR 3 frame generation.
+    FgInputs::PrepareInputs(frame->id, cmdbuf, texture_cache, runtime, image_size.width,
+                            image_size.height);
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
     // sotc: SOTC_OUTPUT_RES=WxH (1280x720 ... 3840x2160): the presented frame has this size, the
     // game's 1080p image is scaled to it (FSR 1 + RCAS with BB_FSR1=1, else bilinear).
@@ -774,6 +787,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     frame->ready_tick = draw_scheduler.CurrentTick();
     SubmitInfo info{};
     draw_scheduler.Flush(info);
+    FgInputs::FrameSubmitted(frame->id);
     return frame;
 }
 
@@ -847,6 +861,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     frame->ready_tick = scheduler.CurrentTick();
     SubmitInfo info{};
     scheduler.Flush(info);
+    FgInputs::NoInputs(frame->id); // sotc: no game image, no frame generation
     return frame;
 }
 
@@ -863,10 +878,22 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
 
     // Recreate the swapchain if the window was resized.
     if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {
+        FgInputs::Suspend(); // sotc: frame generation off while the swapchain changes
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
     }
 
+    // sotc: FSR 3 frame generation: the frame between the last game frame and this one first,
+    // this one half a frame later.
+    if (is_game_frame && !is_reusing_frame) {
+        FrameGen::TestTick();
+        FsrFg::NoteGameFrame();
+        if (FrameGen::Current() == FrameGen::Mode::Fsr && PresentGenerated(frame)) {
+            FsrFg::WaitForGameFrame();
+        }
+    }
+
     if (!swapchain.AcquireNextImage()) {
+        FgInputs::Suspend();
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
         if (!swapchain.AcquireNextImage()) {
             // User resizes the window too fast and GPU can't keep up. Skip this frame.
@@ -1024,8 +1051,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             // sceSaveDataDialog); draws nothing while it has nothing to show.
             static bool overlay_ready = false;
             if (!std::exchange(overlay_ready, true)) {
+                // Up to 2 overlay draws per game frame with FSR 3: a deeper buffer ring.
                 BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format,
-                                swapchain.GetImageCount());
+                                std::max(swapchain.GetImageCount(), 8u));
             }
             BbOverlay::Render(cmdbuf, swapchain_image_view, extent);
         }
@@ -1120,7 +1148,12 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // Present to swapchain.
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
-        if (!swapchain.Present()) {
+        const bool presented = swapchain.Present();
+        if (FrameGen::Current() == FrameGen::Mode::Fsr) {
+            FsrFg::NotePresent();
+        }
+        if (!presented) {
+            FgInputs::Suspend();
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
     }
@@ -1148,6 +1181,107 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             }
         }
     }
+}
+
+bool Presenter::PresentGenerated(Frame* frame) {
+    auto& scheduler = present_scheduler;
+    const auto cmdbuf = scheduler.CommandBuffer();
+    const vk::Image generated =
+        FsrFg::Generate(cmdbuf, frame->id, frame->image, frame->width, frame->height);
+
+    // FSR 3 reads the game frame and its inputs: after the frame's own commands.
+    if (frame->ready_semaphore == draw_scheduler.GetWorkSemaphore()->Handle()) {
+        draw_scheduler.WaitSubmitted(frame->ready_tick, false);
+    }
+    SubmitInfo info{};
+    info.AddWait(frame->ready_semaphore, frame->ready_tick);
+    const auto submit = [&] {
+        const u64 tick = scheduler.CurrentTick();
+        scheduler.Flush(info);
+        FsrFg::Submitted(scheduler, tick);
+    };
+    if (!generated) {
+        submit(); // FSR 3 history only (first frame, after a cut)
+        return false;
+    }
+    if (!swapchain.AcquireNextImage()) {
+        submit();
+        FgInputs::Suspend();
+        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        return false;
+    }
+
+    const vk::Image swapchain_image = swapchain.Image();
+    const vk::Extent2D extent = swapchain.GetExtent();
+    const auto color_range = vk::ImageSubresourceRange{
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .baseMipLevel = 0,
+        .levelCount = 1,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+    const auto swapchain_barrier = [&](vk::AccessFlags src, vk::AccessFlags dst,
+                                       vk::ImageLayout from, vk::ImageLayout to) {
+        return vk::ImageMemoryBarrier{
+            .srcAccessMask = src,
+            .dstAccessMask = dst,
+            .oldLayout = from,
+            .newLayout = to,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = swapchain_image,
+            .subresourceRange = color_range,
+        };
+    };
+    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
+                           {}, {},
+                           swapchain_barrier(vk::AccessFlagBits::eNone,
+                                             vk::AccessFlagBits::eTransferWrite,
+                                             vk::ImageLayout::eUndefined,
+                                             vk::ImageLayout::eTransferDstOptimal));
+    cmdbuf.clearColorImage(swapchain_image, vk::ImageLayout::eTransferDstOptimal,
+                           vk::ClearColorValue{std::array<float, 4>{0.f, 0.f, 0.f, 1.f}},
+                           color_range);
+    const auto rect = FitImage(frame->width, frame->height, extent.width, extent.height);
+    const vk::ImageBlit blit{
+        .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .srcOffsets = std::array{vk::Offset3D{0, 0, 0},
+                                 vk::Offset3D{static_cast<s32>(frame->width),
+                                              static_cast<s32>(frame->height), 1}},
+        .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .dstOffsets =
+            std::array{vk::Offset3D{rect.offset.x, rect.offset.y, 0},
+                       vk::Offset3D{rect.offset.x + static_cast<s32>(rect.extent.width),
+                                    rect.offset.y + static_cast<s32>(rect.extent.height), 1}},
+    };
+    cmdbuf.blitImage(generated, vk::ImageLayout::eGeneral, swapchain_image,
+                     vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
+    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                           vk::PipelineStageFlagBits::eAllCommands,
+                           vk::DependencyFlagBits::eByRegion, {}, {},
+                           swapchain_barrier(vk::AccessFlagBits::eTransferWrite,
+                                             vk::AccessFlagBits::eColorAttachmentWrite,
+                                             vk::ImageLayout::eTransferDstOptimal,
+                                             vk::ImageLayout::eColorAttachmentOptimal));
+    BbOverlay::Render(cmdbuf, swapchain.ImageView(), extent);
+    cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                           vk::PipelineStageFlagBits::eAllCommands,
+                           vk::DependencyFlagBits::eByRegion, {}, {},
+                           swapchain_barrier(vk::AccessFlagBits::eColorAttachmentWrite,
+                                             vk::AccessFlagBits::eNone,
+                                             vk::ImageLayout::eColorAttachmentOptimal,
+                                             vk::ImageLayout::ePresentSrcKHR));
+    info.AddWait(swapchain.GetImageAcquiredSemaphore());
+    info.AddSignal(swapchain.GetPresentReadySemaphore());
+    submit();
+    std::scoped_lock submit_lock{Scheduler::submit_mutex};
+    if (!swapchain.Present()) {
+        FgInputs::Suspend();
+        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+    }
+    FsrFg::NotePresent();
+    return true;
 }
 
 Frame* Presenter::GetRenderFrame() {

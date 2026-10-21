@@ -1,6 +1,10 @@
-# Shadow of the Colossus — PC (port nativo / native port) · v0.57-opt7
+# Shadow of the Colossus — PC (Linux build)
 
-**[Português](#português)** · **[English](#english)** · [Releases](../../releases) · [Changelog](CHANGELOG.md)
+**Este fork é focado em Linux.** Launcher GTK4, FSR 3, fast bind, correções de build e
+instruções completas estão em **[README-LINUX.md](README-LINUX.md)**. As seções abaixo são do
+port original para Windows e ficam como referência.
+
+**[Português](#português)** · **[English](#english)** · [Linux](README-LINUX.md) · [Releases](../../releases) · [Changelog](CHANGELOG.md)
 
 > **Nenhum arquivo do jogo nem da Sony está incluído / No game or Sony files are included.**
 > Você precisa do seu próprio dump do jogo e, para ter som, de dois módulos do seu próprio

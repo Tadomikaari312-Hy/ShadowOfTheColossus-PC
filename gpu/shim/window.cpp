@@ -9,6 +9,7 @@
 #include "sdl_window.h"
 #include "bbport_overlay.h"
 #include "video_core/renderdoc.h"
+#include "video_core/renderer_vulkan/vk_framegen.h"
 
 namespace Frontend {
 
@@ -187,6 +188,9 @@ bool WindowSDL::PollEvents() {
         }
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F12 && !event.key.repeat) {
             VideoCore::TriggerCapture(); // only does something when running under RenderDoc
+        }
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F8 && !event.key.repeat) {
+            Vulkan::FrameGen::Cycle(); // sotc: off <-> FSR 3 frame generation
         }
         switch (event.type) {
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:

@@ -16,6 +16,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <strings.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 /* 64-bit sizes and times; directories are never opened as CRT descriptors. */
@@ -104,7 +107,8 @@ void runtime_file_configure(const char *app0,const char *user) {
         for (int i=0;i<2 && !update_root[0];++i) {
             snprintf(path,sizeof(path),"%s%s",app0,suffixes[i]);
             HostStat st;
-            if (!host_stat(path,&st) && S_ISDIR(st.st_mode)) snprintf(update_root,sizeof(update_root),"%s",path);
+            if (!host_stat(path,&st) && S_ISDIR(st.st_mode) && strlen(path)<sizeof(update_root))
+                memcpy(update_root,path,strlen(path)+1); /* bbport: avoid snprintf truncation warning. */
         }
     }
     if (update_root[0]) printf("Runtime: game update overlaid from %s\n",update_root);
@@ -116,6 +120,62 @@ void runtime_file_configure(const char *app0,const char *user) {
         char guest[32]; snprintf(guest,sizeof(guest),"/%s",writable[i]);
         runtime_file_mount(guest,path);
     }
+}
+#ifdef _WIN32
+#define ci_equal(a,b) (!_stricmp((a),(b)))
+#else
+#define ci_equal(a,b) (!strcasecmp((a),(b)))
+#endif
+/* sotc: the dump keeps Windows casing (pakN.psarc, Models/, ...) while the executable asks for
+ * lowercase names, and Linux is case-sensitive. Resolve an existing host path component by
+ * component, ignoring case, but only after the exact path misses. Returns 0 with the on-disk path
+ * in out, or -1 when it does not exist. New names (creations) keep their requested casing. */
+static int resolve_existing(const char *in,char *out,size_t size) {
+    HostStat st;
+    if (!host_stat(in,&st)) {
+        int n=snprintf(out,size,"%s",in);
+        return n>=0 && (size_t)n<size ? 0 : -1;
+    }
+    char path[1100]="";
+    size_t len=0;
+    const char *p=in;
+    if (*p=='/') { path[len++]='/'; path[len]=0; ++p; }
+    while (*p) {
+        while (*p=='/') ++p;
+        if (!*p) break;
+        const char *end=strchr(p,'/');
+        size_t n=end ? (size_t)(end-p) : strlen(p);
+        if (n>=256) return -1;
+        char name[256];
+        memcpy(name,p,n); name[n]=0;
+        const char *sep=(len && path[len-1]!='/') ? "/" : "";
+        char candidate[1100];
+        int k=snprintf(candidate,sizeof(candidate),"%s%s%s",path,sep,name);
+        if (k<0 || (size_t)k>=sizeof(candidate)) return -1;
+        if (host_stat(candidate,&st)) {
+            const char *dir=len ? path : ".";
+            DIR *d=opendir(dir);
+            int found=0;
+            if (d) {
+                struct dirent *e;
+                while ((e=readdir(d))) {
+                    if (!ci_equal(e->d_name,name)) continue;
+                    k=snprintf(candidate,sizeof(candidate),"%s%s%s",path,sep,e->d_name);
+                    if (k<0 || (size_t)k>=sizeof(candidate)) { found=-1; break; }
+                    found=1;
+                    break;
+                }
+                closedir(d);
+            }
+            if (found<0) return -1;
+            if (!found) return -1;
+        }
+        memcpy(path,candidate,(size_t)k+1);
+        len=(size_t)k;
+        p=end ? end+1 : p+n;
+    }
+    int n=snprintf(out,size,"%s",path);
+    return n>=0 && (size_t)n<size ? 0 : -1;
 }
 /* Resolve a guest path to a host path; returns 0 or a host errno. */
 static int translate(const char *guest,char *out,size_t size) {
@@ -136,11 +196,17 @@ static int translate(const char *guest,char *out,size_t size) {
     else if ((size_t)snprintf(out,size,"%s%s",m->host,buffer+best)>=size) result=ENAMETOOLONG;
     const int game_path=m && (!strcmp(m->guest,"/app0") || !strcmp(m->guest,"/hostapp"));
     pthread_mutex_unlock(&lock);
-    if (!result && game_path && update_root[0] && buffer[best]) {
-        char updated[1100];
-        HostStat st;
-        if ((size_t)snprintf(updated,sizeof(updated),"%s%s",update_root,buffer+best)<sizeof(updated) &&
-            !host_stat(updated,&st) && (size_t)snprintf(out,size,"%s",updated)>=size) result=ENAMETOOLONG;
+    if (!result && game_path && buffer[best]) {
+        /* sotc: keep the update's files on top, then fold casing of the game dump (pakn.psarc). */
+        char resolved[1100];
+        int found=0;
+        if (update_root[0]) {
+            char updated[1100];
+            if ((size_t)snprintf(updated,sizeof(updated),"%s%s",update_root,buffer+best)<sizeof(updated) &&
+                !resolve_existing(updated,resolved,sizeof(resolved))) found=1;
+        }
+        if (!found && !resolve_existing(out,resolved,sizeof(resolved))) found=1;
+        if (found && (size_t)snprintf(out,size,"%s",resolved)>=size) result=ENAMETOOLONG;
     }
     if (result==ENOENT) fprintf(stderr,"Runtime: no mount for guest path %s\n",guest);
     return result;

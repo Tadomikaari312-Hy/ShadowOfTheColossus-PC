@@ -47,12 +47,20 @@ Tudo isto está no lançador, na página **Imagem e FPS** (e os principais em **
   da tela; a tela cheia usa o monitor inteiro.
 - **60 FPS** (experimental): tira o limite de 30 FPS do jogo (patch GoldHEN de illusion), com
   vblank a 120 Hz. Mediu 38 FPS no campo aberto e ~25 no templo.
+- **Reutilização de binds** (padrão ligado): pula a remontagem dos descritores quando o
+  desenho seguinte usa o mesmo pipeline, recursos e uniforms. Medido no Santuário e no caminho
+  até o primeiro colosso: ~25 → 30 FPS, frametime cravado em 33,3 ms. `SOTC_FAST_BIND=0` desliga.
 - **Texturas nítidas**: filtro anisotrópico 16x, quase sem custo.
 - **Modo PS4 Pro**: o jogo se vê num PS4 Pro e oferece no próprio menu (Opções > Apresentação)
   o Modo Grafismo **Cinematográfico** (1440p, mais detalhe) ou **Desempenho**. É mais pesado:
   ~25 FPS no campo aberto.
 - **Efeitos**: vinheta, névoa atmosférica e oclusão ambiente (SSAO) podem ser desligados.
   O motion blur, o brilho e os filtros ficam no menu do próprio jogo.
+- **Geração de quadros FSR 3.1.6** (`SOTC_FRAMEGEN=fsr` ou `auto`; **F8** liga/desliga): desenha
+  um quadro intermediário entre dois quadros do jogo, então 30 FPS aparecem como 60 na tela. Se o
+  jogo cair abaixo de 30 FPS, a tela mostra cerca de o dobro da taxa dele. Precisa de Vulkan 1.3
+  com imagens de armazenamento (testado na RX 6600M, Mesa RADV). O padrão é desligado, e a opção
+  ainda não está no lançador.
 - **Cvars do motor** (Avançado): variáveis do motor Bluepoint, `NOME=valor`, para quem quer
   experimentar.
 
@@ -130,9 +138,13 @@ Estas variáveis de ambiente ajudam a investigar problemas:
 | Variável | Efeito |
 |---|---|
 | `SOTC_FPS=1` | taxa de quadros a cada 5 s |
+| `SOTC_FRAMEGEN=off/auto/fsr` | geração de quadros FSR 3 (o F8 alterna; padrão: desligado) |
+| `SOTC_FSRFG_LOG=1` | quadros gerados e ritmo das apresentações a cada 5 s |
+| `SOTC_FRAMEGEN_TEST_CYCLE=segundos` | alterna FSR 3/desligado nesse intervalo (teste) |
 | `BB_FAULT_RING=arquivo` | grava as últimas exceções (sobrevive a quedas) |
 | `BB_STACKS_TRIGGER=arquivo` | criar o arquivo despeja as pilhas das threads |
 | `BB_READBACKS=0/1/2` | leituras da GPU; o padrão 2 é o exigido pelo jogo |
+| `SOTC_FAST_BIND=0` | não reaproveita binds de descritores entre desenhos iguais (padrão: ligado) |
 | `SOTC_RECORD_THREAD=0` | grava os comandos Vulkan na própria thread de comandos (padrão: thread própria) |
 | `SOTC_INDIRECT_DIRECT=0` | mantém indiretos os draws cujos argumentos estão na CPU |
 | `SOTC_WAIT_MARKER=1/2` | esperas pela GPU consultam um marcador escrito por ela (experimental) |

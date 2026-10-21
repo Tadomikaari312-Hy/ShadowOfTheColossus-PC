@@ -353,6 +353,10 @@ static void host_discard(uint64_t phys, uint64_t size) {
     fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
 }
 #endif
+#ifndef _WIN32
+/* bbport: live-view carve accounting is Windows-only; the GPU side treats 0 as "nothing carved". */
+uint64_t runtime_memory_carve_splits(void) { return 0; }
+#endif
 static void queue_hook(int kind, uintptr_t address, uint64_t size) {
     GpuRange hook = kind==HOOK_MAP ? hook_map : kind==HOOK_UNMAP ? hook_unmap : hook_invalidate;
     if (!hook) return;
