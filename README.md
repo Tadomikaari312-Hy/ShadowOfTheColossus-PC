@@ -23,19 +23,10 @@ de que o jogo precisa, no estilo do [bloodborne_pc](https://github.com/Supermedo
 
 ### Novidades
 
-| Versão | Melhorias e correções |
-|---|---|
-| **0.57-opt7** | **Bem menos travadas na primeira vez que se joga:** shaders novos traduzidos em várias threads (caches vazios, demo: pior travada 4,6–5,2 s → 3,4–3,9 s, 1% low 29 → 39 FPS; santuário 6,0 → 3,9 s). **Modo 60 FPS limitado a 60** (relatos do 5º colosso, #34, e da cena do 2º colosso, #48). **Correções:** Windows em chinês (#45), mensagem para jogo criptografado (#52). O cache de shaders não é refeito. |
-| **0.57-opt6** | **Mais FPS com uma thread só para desenhar** (ideia e código de Lucas-blip-png): santuário 34,7 → 38,2 FPS, trecho pesado do mundo aberto 34,0 → 36,1 FPS. **Primeira visita a uma área:** pipelines de compute montados em várias threads (cache vazio: pior travada 22 s → 6 s). **Correção** do fechamento ao carregar o save no modo PS4 Pro (#35). **Atualização pelo lançador** (#37). O cache de shaders é refeito na primeira abertura. |
-| **0.57-opt5** | **Sessões longas estáveis:** memória de buffers sem uso devolvida à GPU (30 minutos de demo: pico 3,4 GB estável, antes 4,3–4,4 GB e subindo). **Mundo aberto ~2% mais rápido** (envio antecipado). **Correção de queda rara** ao carregar o save ("write-only"). |
-| **0.57-opt4** | **Mais FPS:** a thread de comandos gasta bem menos tempo em travas, proteções de página, cópias e alocações (santuário 29 → 35 FPS; demo 47 → 53,5 FPS, 1% low 29 → 38, quadros acima de 50 ms 129 → 26). |
-| **0.57-opt3** | **Menos travadas na primeira visita a uma área:** pipelines gráficos montados em segundo plano; o objeto novo aparece um instante depois em vez de o jogo parar (cache vazio: 1% low 23,9 → 29,1 FPS, quadros acima de 50 ms 235 → 156). |
-| **0.57-opt2** | **Muito menos engasgos (placas de 6 GB):** texturas guardam só os mips usados (memória de vídeo no demo ~6,1 → ~3,4 GB). **Leituras da GPU assíncronas** (santuário 29 → 31 FPS). **Memória de buffers devolvida** ao desmapear (sessões longas). Demo: 49,9 FPS, 47 quadros acima de 50 ms (antes 100–150). **Quedas deixam log e minidump** em `user/crashes/`. |
-| **0.57** | **Placas AMD:** correção das cores verdes/rosas na névoa e nos personagens (as AMD passam a usar o caminho de 32 threads da NVIDIA; diagnóstico da issue #7, ainda não testado numa AMD). **Opção nova** no lançador para desligar o acesso direto à memória: ~10% mais FPS, água distante mais lisa. |
-| **0.56** | **Água do mundo aberto com ondas:** lagos e rios abaixo das cascatas não ficam mais lisos como espelho (uma instrução de shader, `S_WQM_B64`, era ignorada). **Lago de cima ondula e reflete até longe** (acesso direto à memória ligado por padrão, como no Pink-shadPS4). Árvores distantes sem "lixo colorido". |
-| **0.0.13** | **Sem quedas:** corrigida a queda na abertura/menu da 0.0.12 (o jogo pedia mais texturas do que cabe no pool). Testado ~40 min pelo mapa, com dois carregamentos de save. **Reflexos do lago** em quase toda a superfície, com ondulação (uma trava de laços dos shaders cortava os raios do reflexo). |
-| **0.0.12** | **Texturas nítidas de volta, sem o jogo fechar:** a corrupção de memória que derrubava o jogo depois de carregar um save foi corrigida, e o streaming de texturas voltou (pedras e paredes bem mais nítidas). **Água:** respingos, anéis e espuma ao nadar; o lago reflete o céu e o brilho do sol; reflexos de ambiente com o *cubemap* certo de cada *probe* (correção do Pink-shadPS4). |
-| **0.0.11** | Corrigida a grama com textura de "lixo colorido" da 0.0.10. |
+- **Novo nesta build:** fast bind de descritores (ligado por padrão; `SOTC_FAST_BIND=0` desliga),
+  FSR 3.1.6 com F8, launcher GTK4 e correções de build Linux. No Santuário: 24–25 → 29,6–30 FPS.
+- **Base:** todas as atualizações até a **0.57-opt8** do Oussama, mais as otimizações locais e o
+  launcher Linux. Detalhes e medições no [CHANGELOG](CHANGELOG.md) e no [README-LINUX](README-LINUX.md).
 
 Detalhes de cada versão no [CHANGELOG](CHANGELOG.md).
 
@@ -43,8 +34,8 @@ Detalhes de cada versão no [CHANGELOG](CHANGELOG.md).
 
 - Na primeira abertura depois de atualizar, os shaders são compilados de novo: o primeiro
   carregamento demora e engasga.
-- Placas **AMD**: a 0.57 traz a correção das cores verdes/rosas ([#7](../../issues/7)), ainda sem
-  teste numa AMD. Se continuar, mande o seu `user/last_run.log` na issue.
+- Placas **AMD**: a correção das cores verdes/rosas ([#7](../../issues/7)) foi testada nesta
+  build numa RX 6600M. Se ainda aparecer, mande o seu `user/last_run.log` na issue.
 - Com 8 GB de memória de vídeo, o uso fica perto do limite em áreas grandes.
 
 ### Download e uso
@@ -99,7 +90,7 @@ normalmente, a 30 FPS.
 | Som | Áudio real com os módulos Ngs2/Ult do próprio usuário. |
 | Controles | Teclado e controle juntos, câmera no mouse, troca de teclas no lançador. |
 | Modos | 60 FPS (patch de illusion), filtro anisotrópico 16x, modo PS4 Pro, saída até 4K. |
-| Desempenho | No demo da tela de título, em modo 60 FPS: média de **37–45 → ~67 FPS**, trecho mais pesado (ponte do cânion) **~17 → 29–34 FPS**. |
+| Desempenho | Nesta build (Xeon E5-2667 v4 + RX 6600M): Santuário **24–25 → 29,6–30 FPS** com fast bind; rota até o 1º colosso em **30 FPS**. No demo do upstream (i9 + RTX 2060 SUPER): **37–45 → ~67 FPS**; ponte do cânion **~17 → 29–34 FPS**. |
 
 ### Perguntas comuns
 
@@ -124,27 +115,18 @@ game needs, in the style of [bloodborne_pc](https://github.com/Supermedo/bloodbo
 
 ### What's new
 
-| Version | Improvements and fixes |
-|---|---|
-| **0.57-opt7** | **Far fewer freezes the first time you play:** new shaders translated on several threads (empty caches, demo: worst freeze 4.6–5.2 s → 3.4–3.9 s, 1% low 29 → 39 FPS; shrine 6.0 → 3.9 s). **60 FPS mode capped at 60** (reports of the 5th colossus, #34, and the 2nd colossus cutscene, #48). **Fixes:** Chinese Windows (#45), message for an encrypted game (#52). The shader cache is kept. |
-| **0.57-opt6** | **More FPS with a thread of its own for drawing** (idea and code by Lucas-blip-png): shrine 34.7 → 38.2 FPS, heavy open-world stretch 34.0 → 36.1 FPS. **First visit to an area:** compute pipelines built on several threads (empty cache: worst freeze 22 s → 6 s). **Fix** for the crash when loading a save in PS4 Pro mode (#35). **Updates from the launcher** (#37). The shader cache is rebuilt on first launch. |
-| **0.57-opt5** | **Stable long sessions:** unused buffer memory is given back to the GPU (30-minute demo: peak 3.4 GB and flat, before 4.3–4.4 GB and rising). **Open world ~2% faster** (early submit). **Fix for a rare crash** while loading the save ("write-only"). |
-| **0.57-opt4** | **More FPS:** the command thread spends far less time in locks, page protection, copies and allocations (shrine 29 → 35 FPS; demo 47 → 53.5 FPS, 1% low 29 → 38, frames over 50 ms 129 → 26). |
-| **0.57-opt3** | **Less freezing on the first visit to an area:** graphics pipelines are built in the background; a new object appears a moment later instead of the game stopping (empty cache: 1% low 23.9 → 29.1 FPS, frames over 50 ms 235 → 156). |
-| **0.57-opt2** | **Much less stutter (6 GB cards):** textures keep only the mips they use (video memory in the demo ~6.1 → ~3.4 GB). **Asynchronous GPU readbacks** (shrine 29 → 31 FPS). **Buffer memory given back** on unmap (long sessions). Demo: 49.9 FPS, 47 frames over 50 ms (before 100–150). **Crashes leave a log and a minidump** in `user/crashes/`. |
-| **0.57** | **AMD cards:** fix for the green/pink fog and characters (AMD now uses the NVIDIA 32-lane path; diagnosis from issue #7, not yet tested on an AMD card). **New launcher option** to turn off direct memory access: ~10% more FPS, flatter distant water. |
-| **0.56** | **Open-world water with waves:** lakes and rivers below the waterfalls are no longer flat as a mirror (a shader instruction, `S_WQM_B64`, was ignored). **The upper lake ripples and reflects far away** (direct memory access on by default, as in Pink-shadPS4). Distant trees without "colored garbage". |
-| **0.0.13** | **No more crashes:** fixed the 0.0.12 crash in the intro/menu (the game asked for more textures than its pool holds). Tested ~40 min across the map with two save loads. **Lake reflections** over almost the whole surface, with ripples (a shader loop guard cut the reflection rays short). |
-| **0.0.12** | **Sharp textures back, without crashes:** fixed the memory corruption that closed the game after loading a save, and texture streaming is back (much sharper rocks and walls). **Water:** splashes, rings and foam while swimming; the lake reflects the sky and the sun's glint; environment reflections use each probe's correct cubemap (fix from Pink-shadPS4). |
-| **0.0.11** | Fixed the "colored garbage" grass texture of 0.0.10. |
+- **New in this build:** descriptor fast bind (on by default; `SOTC_FAST_BIND=0` disables it),
+  FSR 3.1.6 with F8, GTK4 launcher and Linux build fixes. At the Sanctuary: 24–25 → 29.6–30 FPS.
+- **Base:** all updates through Oussama's **0.57-opt8**, plus the local optimizations and the
+  Linux launcher. Details and measurements in [CHANGELOG](CHANGELOG.md) and [README-LINUX](README-LINUX.md).
 
 Full details in the [CHANGELOG](CHANGELOG.md) (in Portuguese).
 
 ### Known issues
 
 - The first start after updating rebuilds the shaders: the first load is slow and stutters.
-- **AMD** GPUs: 0.57 has the fix for the green/pink tint ([#7](../../issues/7)), not yet tested
-  on an AMD card. If it persists, attach your `user/last_run.log` to the issue.
+- **AMD** GPUs: the green/pink tint fix ([#7](../../issues/7)) was tested on an RX 6600M in this
+  build. If it persists, attach your `user/last_run.log` to the issue.
 - With 8 GB of video memory, usage gets close to the limit in large areas.
 
 ### Download and use
@@ -176,8 +158,9 @@ Game library and automatic search, shadPS4 save import, 720p–4K output (the ga
 (DualShock 4, DualSense, Xbox) with mouse camera, key remapping, Bluepoint engine cvars, desktop
 shortcut and a session log in `user/last_run.log`.
 
-In 60 FPS mode the title-screen attract demo averages ~67 FPS on an RTX 2060 SUPER, with
-29–34 FPS in its heaviest section. Vulkan only (no DirectX). AMD and Intel can enable the
+This build (Xeon E5-2667 v4 + RX 6600M) runs the Sanctuary at **24–25 → 29.6–30 FPS** with
+fast bind and the route to the first colossus at **30 FPS**. On the upstream hardware
+(i9 + RTX 2060 SUPER), 60 FPS mode averages ~67 FPS, with 29–34 FPS in its heaviest section. Vulkan only (no DirectX). AMD and Intel can enable the
 NVIDIA-only submission options under **Image and FPS > GPU work submission**.
 
 **Why no sound files?** The two `.sprx` files are Sony firmware and may not be redistributed;
@@ -204,6 +187,12 @@ diagnóstico / diagnostic variables: [docs/sotc/README-SotC.md](docs/sotc/README
 
 ## Créditos / Credits
 
+- [Tadomikaari312-Hy](https://github.com/Tadomikaari312-Hy/ShadowOfTheColossus-PC): build Linux,
+  launcher GTK4, fast bind e medições desta branch.
+- [AjncSystem](https://github.com/AjncSystem/ShadowOfTheColossus-PC): upstream principal e
+  mantenedor do repositório.
+- [Oussama268](https://github.com/Oussama268/ShadowOfTheColossus-PC): releases `opt5`–`opt8`,
+  correções de AMD/Intel, widescreen, 60 FPS e base de desempenho.
 - [bloodborne_pc](https://github.com/Supermedo/bloodborne_pc) (Supermedo, deadinside28 and
   forks): carregador, runtime nativo e lançador / loader, native runtime and launcher. README
   original: [docs/bbport](docs/bbport/README.md).

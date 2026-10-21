@@ -4,7 +4,7 @@ Build pessoal do port nativo de **Shadow of the Colossus** (PS4, CUSA08809) com 
 **Linux**. O jogo continua rodando a partir do **seu dump**; nada do jogo, da Sony ou da
 Bluepoint é distribuído aqui.
 
-Esta branch é baseada na linha `v0.57-opt7` do port e reúne as mudanças que eu uso no dia a
+Esta branch é baseada na linha `v0.57-opt8` do port e reúne as mudanças que eu uso no dia a
 dia: launcher GTK4, FSR 3, fast-bind de descritores, correções de build Linux e ajustes de
 desempenho. O `main` do fork continua limpo, apontando para o upstream, para receber PRs.
 
@@ -88,22 +88,38 @@ cache de shaders ficam em `user/`.
 | `SOTC_GAME_DIR=...` | pasta do dump CUSA08809 |
 | `SOTC_SYS_MODULES=...` | pasta com `libSceNgs2.sprx` e `libSceUlt.sprx` |
 
+## Resultados de teste
+
+Hardware desta build: **Intel Xeon E5-2667 v4**, **31 GB RAM**, **AMD Radeon RX 6600M**
+(Mesa RADV), CachyOS, 1080p. São medições deste PC; o upstream usa hardware diferente.
+
+| Teste | Antes | Depois |
+|---|---|---|
+| Santuário (fast bind OFF → ON) | 24,0–25,0 FPS | **29,6–30,0 FPS** |
+| `draw busy` no Santuário | 39–40 ms | **32,5–33,1 ms** |
+| `parse` no Santuário | 22–23 ms | **18–20 ms** |
+| Rota Santuário → 1º colosso | — | **30 FPS travados**, frametime 33,2–33,5 ms |
+
+A rota até o primeiro colosso ficou em 30 FPS (limite do jogo), sem artefatos de textura ou
+sombra observados com o fast bind. O FSR 3 apresentou 30 FPS do jogo como ~60 quadros/s.
+
 ## Estado
 
-- Santuário e caminho até o primeiro colosso: **30 FPS travados**, frametime 33,2–33,5 ms,
-  sem artefatos de textura/sombra observados com fast bind.
-- FSR 3: 30 FPS do jogo → ~60 apresentações/s; testado em RX 6600M com Mesa RADV.
 - Primeira visita a uma área ainda compila shaders e pode engasgar.
 - O modo 60 FPS e o FSR 3 são experimentais; se algo quebrar, rode com
   `SOTC_FRAMEGEN=off SOTC_FPS=60` e compare.
 
 ## Créditos e licença
 
-O port é baseado no trabalho de [AjncSystem](https://github.com/AjncSystem/ShadowOfTheColossus-PC),
-[Oussama268](https://github.com/Oussama268/ShadowOfTheColossus-PC), do
-[shadPS4](https://github.com/shadps4-emu/shadPS4) e do
-[bloodborne_pc](https://github.com/Supermedo/bloodborne_pc). As otimizações do fork
-Pink-shadPS4 estão creditadas no README original e no CHANGELOG.
+- [AjncSystem](https://github.com/AjncSystem/ShadowOfTheColossus-PC): upstream principal do port
+  e mantenedor do repositório.
+- [Oussama268](https://github.com/Oussama268/ShadowOfTheColossus-PC): releases `opt5`–`opt8`,
+  correções de AMD/Intel, widescreen, 60 FPS e base de desempenho.
+- [shadPS4](https://github.com/shadps4-emu/shadPS4) e o fork shadPS4 SotC: núcleo de vídeo Vulkan.
+- [Pink-shadPS4](https://github.com/luizgustavs/Pink-shadPS4) (luizgustavs): cvars, heap guard,
+  comandos em thread própria e correções de shader.
+- [bloodborne_pc](https://github.com/Supermedo/bloodborne_pc): carregador, runtime nativo e
+  launcher original.
 
 O código segue a licença do repositório original (GPL-2.0-or-later). Nenhum arquivo do jogo,
 firmware da Sony, save ou dump é incluído.
